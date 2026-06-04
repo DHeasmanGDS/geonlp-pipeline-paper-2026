@@ -1,5 +1,5 @@
 # geonlp-pipeline-paper-2026
-[![DOI](https://doi.org/10.5281/zenodo.20543279.svg)](https://doi.org/10.5281/zenodo.20543279)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20543279.svg)](https://doi.org/10.5281/zenodo.20543279)
 
 Frozen code snapshot accompanying:
 
