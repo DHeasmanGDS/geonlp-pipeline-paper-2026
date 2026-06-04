@@ -1,0 +1,74 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata from this file."
+title: "geonlp-pipeline-paper-2026: A Reproducible Pipeline for Geoscientific Text Mining"
+abstract: >-
+  Production pipeline source code, database schema, migrations, and
+  Kubernetes deployment manifests accompanying Heasman and Eglington
+  (2026), a methodology paper describing a reproducible Python and
+  PostgreSQL pipeline for assembling domain-specific text corpora from
+  the xDD Snippet API. Includes pre-flight hit checking, in-stream
+  Counter pruning for memory-bounded streaming, pool-segregated parallel
+  workers, and in-database information-theoretic statistics.
+type: software
+version: "1.4"
+date-released: "2026-06-04"
+license: MIT
+url: "https://github.com/DHeasmanGDS/geonlp-pipeline-paper-2026"
+repository-code: "https://github.com/DHeasmanGDS/geonlp-pipeline-paper-2026"
+doi: "10.5281/zenodo.20543278"  # Concept DOI (covers all versions; always resolves to latest).
+
+authors:
+  - family-names: Heasman
+    given-names: Drew
+    affiliation: "University of Saskatchewan, Department of Geological Sciences"
+    email: heasman.drew@gmail.com
+    # orcid: "https://orcid.org/0000-0002-1362-1987"  # FILL IN if you have an ORCID
+  - family-names: Eglington
+    given-names: Bruce
+    affiliation: "University of Saskatchewan, Department of Geological Sciences"
+    # orcid: "https://orcid.org/0000-0003-1318-6062"  # FILL IN if Bruce has an ORCID
+
+keywords:
+  - geoscientific text mining
+  - natural language processing
+  - pointwise mutual information
+  - reproducible research
+  - PostgreSQL
+  - xDD
+  - GeoDeepDive
+  - corpus linguistics
+  - geoscience NLP
+
+preferred-citation:
+  type: article
+  title: "A Reproducible Pipeline for Constructing Domain-Specific Text Corpora from Scholarly Literature: A Case Study in Geoscience Using the xDD Snippet API"
+  authors:
+    - family-names: Heasman
+      given-names: Drew
+      affiliation: "University of Saskatchewan"
+    - family-names: Eglington
+      given-names: Bruce
+      affiliation: "University of Saskatchewan"
+  journal: "Computers & Geosciences"
+  year: 2026
+  notes: "Manuscript submitted for review."
+  # FILL IN once accepted:
+  # doi: "10.xxxx/xxxxxx"
+  # volume: NN
+  # issue: N
+  # start: NNN
+  # end: NNN
+
+references:
+  - type: software
+    title: "xDD"
+    authors:
+      - family-names: Peters
+        given-names: S. E.
+      - family-names: Ross
+        given-names: I. A.
+      - family-names: Rekatsinas
+        given-names: M. L.
+    year: 2023
+    url: "https://xdd.wisc.edu"
+    notes: "Source of all snippet data used to build the corpus."

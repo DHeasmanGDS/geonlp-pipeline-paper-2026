@@ -1,5 +1,5 @@
 # geonlp-pipeline-paper-2026
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20544824.svg)](https://doi.org/10.5281/zenodo.20544824)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20543278.svg)](https://doi.org/10.5281/zenodo.20543278)
 
 Frozen code snapshot accompanying:
 
@@ -47,18 +47,9 @@ For clarity about scope:
 
 1. **Provision PostgreSQL 15+ locally**, with a database named `geonlp_db` and a user with full privileges.
 
-2. **Apply the schema**:
+2. **Apply with a single command (includes all stored procedures via \ir)**:
    ```bash
-   psql -d geonlp_db -f db/schema.sql
-   ```
-   Or, to mirror the migration history exactly:
-   ```bash
-   for f in db/migrations/0001_*.sql db/migrations/0004_*.sql db/migrations/0005_*.sql; do
-       psql -d geonlp_db -f "$f"
-   done
-   for f in db/migrations/stored_procedures/*.sql; do
-       psql -d geonlp_db -f "$f"
-   done
+   psql d geonlp_db -f db/schema.sql
    ```
 
 3. **Install Python dependencies**:
@@ -150,7 +141,7 @@ If you use this code or build on the pipeline described in the paper, please cit
   journal = {Computers \& Geosciences},
   year    = {2026},
   note    = {[in review]},
-  doi     = {https://doi.org/10.5281/zenodo.20544824}
+  doi     = {https://doi.org/10.5281/zenodo.20543278}
 }
 ```
 
