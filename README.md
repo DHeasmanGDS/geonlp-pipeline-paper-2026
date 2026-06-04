@@ -1,4 +1,5 @@
 # geonlp-pipeline-paper-2026
+[![DOI](https://doi.org/10.5281/zenodo.20543279.svg)](https://doi.org/10.5281/zenodo.20543279)
 
 Frozen code snapshot accompanying:
 
@@ -149,7 +150,7 @@ If you use this code or build on the pipeline described in the paper, please cit
   journal = {Computers \& Geosciences},
   year    = {2026},
   note    = {[in review]},
-  doi     = {[to be added on acceptance]}
+  doi     = {https://doi.org/10.5281/zenodo.20543279}
 }
 ```
 
