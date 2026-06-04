@@ -1,0 +1,88 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  # Renamed 2026-06-02 as part of Phase 1 pool segregation.
+  # Was `geonlp-term-miner` (single pool); now `geonlp-term-miner-small-medium`
+  # claims only term_class IN ('small','medium','NULL') so it never gets stuck
+  # on a mega-term. The companion `geonlp-term-miner-large` CronJob handles
+  # large-class terms in 4Gi pods. After applying this, the legacy
+  # CronJob should be deleted:
+  #
+  #   kubectl delete cronjob geonlp-term-miner --ignore-not-found
+  #
+  name: geonlp-term-miner-small-medium
+  labels:
+    app: geonlp
+    component: term-miner
+    pool: small-medium
+spec:
+  # Every 10 minutes — a new mining attempt fires this often. Combined
+  # with `concurrencyPolicy: Allow`, the steady-state number of
+  # concurrent miner pods is roughly (avg mine time) / 10 min — small
+  # for tiny terms, larger if popular terms grab pods. Self-balancing.
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Allow
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  startingDeadlineSeconds: 600
+
+  jobTemplate:
+    spec:
+      # Wall-clock cap for the SMALL-MEDIUM pool.
+      # Small terms finish in <30 min; medium in a few hours. 24h is
+      # generous headroom for any small/medium term that ends up
+      # slower than expected (and a hint that it should have been
+      # classified 'large' — the classifier may need re-tuning).
+      activeDeadlineSeconds: 86400   # 24h
+      backoffLimit: 0                # don't retry; next tick picks up
+
+      template:
+        metadata:
+          labels:
+            app: geonlp
+            component: term-miner
+            pool: small-medium
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: term-miner
+              image: geonlp-portal:latest
+              imagePullPolicy: Never
+              command:
+                - python
+                - scripts/process_pending_terms.py
+                - "--class"
+                - "small,medium"
+              env:
+                - name: DB_HOST
+                  valueFrom:
+                    secretKeyRef:
+                      name: geonlp-env
+                      key: DB_HOST
+                - name: DB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: geonlp-env
+                      key: DB_USER
+                - name: DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: geonlp-env
+                      key: DB_PASSWORD
+                - name: DB_NAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: geonlp-env
+                      key: DB_NAME
+              resources:
+                # Small-medium pool. Same limits as the pre-Phase-1
+                # worker since small/medium terms are within the
+                # 1 GiB budget by definition. The DB-level cap
+                # MAX_CONCURRENT_SMALL_MEDIUM (=25) bounds how many
+                # of these pods can run at once.
+                requests:
+                  cpu: "100m"
+                  memory: "256Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "1Gi"

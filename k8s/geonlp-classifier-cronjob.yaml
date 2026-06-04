@@ -1,0 +1,74 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  # Classifier: assigns term_class to pending rows that don't have one.
+  # Reads up to --batch-size unclassified pending rows per tick, probes
+  # xDD for each term's hits, writes the class back. Cheap (1 HTTP
+  # call per row) and bounded — the partial index on (status='pending'
+  # AND term_class IS NULL) keeps the discovery query trivial.
+  name: geonlp-term-classifier
+  labels:
+    app: geonlp
+    component: term-classifier
+spec:
+  # Every 30 minutes. With --batch-size=100 and --sleep=0.5, each tick
+  # finishes in ~1 minute (mostly xDD round-trip time). 30 min cadence
+  # means up to 100 newly-queued terms per half-hour get classified
+  # before the workers can reach them — which is far above the actual
+  # user-driven enqueue rate.
+  schedule: "*/30 * * * *"
+  # Forbid: if a previous tick is still running (unlikely with the
+  # 5-min activeDeadlineSeconds), skip this one. Two concurrent
+  # classifiers would race on the same rows; harmless thanks to the
+  # `WHERE term_class IS NULL` guard in the UPDATE, but wasteful on
+  # xDD probes.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+
+  jobTemplate:
+    spec:
+      # 5 min hard cap. A healthy tick finishes in ~1 min; if it's
+      # running 5 min, xDD is misbehaving and the next tick can retry.
+      activeDeadlineSeconds: 300
+      backoffLimit: 0
+
+      template:
+        metadata:
+          labels:
+            app: geonlp
+            component: term-classifier
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: classifier
+              image: geonlp-portal:latest
+              imagePullPolicy: Never
+              command:
+                - python
+                - scripts/classify_pending_terms.py
+                - "--batch-size"
+                - "100"
+                - "--sleep"
+                - "0.5"
+                - "--once"
+              env:
+                - name: DB_HOST
+                  valueFrom: { secretKeyRef: { name: geonlp-env, key: DB_HOST } }
+                - name: DB_USER
+                  valueFrom: { secretKeyRef: { name: geonlp-env, key: DB_USER } }
+                - name: DB_PASSWORD
+                  valueFrom: { secretKeyRef: { name: geonlp-env, key: DB_PASSWORD } }
+                - name: DB_NAME
+                  valueFrom: { secretKeyRef: { name: geonlp-env, key: DB_NAME } }
+              resources:
+                # Trivial: each tick is one DB query + N HTTP probes +
+                # N row UPDATEs. Memory peak is the row batch (~100
+                # ids+terms) and the requests session.
+                requests:
+                  cpu: "50m"
+                  memory: "64Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "256Mi"

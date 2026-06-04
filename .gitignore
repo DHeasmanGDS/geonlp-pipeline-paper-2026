@@ -1,0 +1,75 @@
+# Environment / secrets — NEVER commit credentials
+.env
+.env.*
+!.env.example
+*.secret
+secrets/
+**/secrets.yaml
+**/secret.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# Jupyter
+.ipynb_checkpoints/
+*-checkpoint.ipynb
+*.ipynb_meta
+
+# Database / data dumps
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.sql.gz
+data/raw/
+data/processed/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+
+# Logs / temp
+*.log
+*.tmp
+tmp/
+
+# Build artifacts
+*.whl
+*.tar.gz
+node_modules/
+
+# Local config overrides
+local_settings.py
+config.local.*
+
+# Docker
+.docker/

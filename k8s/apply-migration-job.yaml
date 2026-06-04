@@ -1,0 +1,38 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: geonlp-apply-migration
+  labels:
+    app: geonlp
+    component: migration
+spec:
+  ttlSecondsAfterFinished: 300   # auto-clean 5 min after completion
+  backoffLimit: 0                # don't retry on failure
+  template:
+    metadata:
+      labels:
+        app: geonlp
+        component: migration
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: apply-migration
+          image: geonlp-portal:latest
+          imagePullPolicy: Never
+          command:
+            - python
+            - scripts/apply_migration.py
+            - db/migrations/0001_term_requests_status.sql
+          env:
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef: { name: geonlp-env, key: DB_HOST }
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef: { name: geonlp-env, key: DB_USER }
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: geonlp-env, key: DB_PASSWORD }
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef: { name: geonlp-env, key: DB_NAME }

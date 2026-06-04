@@ -1,0 +1,57 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: geonlp-stats-refresh
+  labels:
+    app: geonlp
+    component: stats-refresh
+spec:
+  # 04:00 UTC daily — quiet window for the NAS Postgres. Adjust if your
+  # local low-traffic window is different.
+  schedule: "0 4 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  startingDeadlineSeconds: 3600
+
+  jobTemplate:
+    spec:
+      # 8h hard cap — well above expected runtime, generous slack for
+      # corpus-size growth. The script's own --timeout matches.
+      activeDeadlineSeconds: 28800
+      backoffLimit: 0
+
+      template:
+        metadata:
+          labels:
+            app: geonlp
+            component: stats-refresh
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: stats-refresh
+              image: geonlp-portal:latest
+              imagePullPolicy: Never
+              command:
+                - python
+                - scripts/refresh_statistics.py
+                - --timeout
+                - "6h"
+              env:
+                - name: DB_HOST
+                  valueFrom: { secretKeyRef: { name: geonlp-env, key: DB_HOST } }
+                - name: DB_USER
+                  valueFrom: { secretKeyRef: { name: geonlp-env, key: DB_USER } }
+                - name: DB_PASSWORD
+                  valueFrom: { secretKeyRef: { name: geonlp-env, key: DB_PASSWORD } }
+                - name: DB_NAME
+                  valueFrom: { secretKeyRef: { name: geonlp-env, key: DB_NAME } }
+              resources:
+                # Almost all the work is in Postgres; this pod just waits
+                # on a single SQL call. Keep it small.
+                requests:
+                  cpu: "50m"
+                  memory: "128Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "512Mi"

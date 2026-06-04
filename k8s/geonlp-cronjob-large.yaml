@@ -1,0 +1,93 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  # Large-pool miner. Claims only term_class='large' rows. Lower
+  # parallelism (5 pods max) and higher memory budget (4 GiB) so the
+  # streaming Counter plus in-stream pruning has room to breathe on
+  # mega-frequency terms without OOM-killing.
+  name: geonlp-term-miner-large
+  labels:
+    app: geonlp
+    component: term-miner
+    pool: large
+spec:
+  # Same 10-min cron tick as the small-medium pool. The DB-side cap
+  # MAX_CONCURRENT_LARGE (=5) is what actually bounds parallelism;
+  # the cron tick just produces a fresh attempt on a regular cadence.
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Allow
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  startingDeadlineSeconds: 600
+
+  jobTemplate:
+    spec:
+      # Wall-clock cap for LARGE pool. Mega-terms like 'water',
+      # 'system', 'mineral' legitimately produce tens of millions of
+      # xDD snippets and can take multiple days to harvest end-to-end.
+      # 7d is the outer envelope before we suspect something's wrong
+      # (likely a hang the read-timeout fix will eventually catch).
+      activeDeadlineSeconds: 604800  # 7d hard ceiling
+      backoffLimit: 0                # don't retry; next tick picks up
+
+      template:
+        metadata:
+          labels:
+            app: geonlp
+            component: term-miner
+            pool: large
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: term-miner
+              image: geonlp-portal:latest
+              imagePullPolicy: Never
+              command:
+                - python
+                - scripts/process_pending_terms.py
+                - "--class"
+                - "large"
+              env:
+                - name: DB_HOST
+                  valueFrom:
+                    secretKeyRef:
+                      name: geonlp-env
+                      key: DB_HOST
+                - name: DB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: geonlp-env
+                      key: DB_USER
+                - name: DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: geonlp-env
+                      key: DB_PASSWORD
+                - name: DB_NAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: geonlp-env
+                      key: DB_NAME
+              resources:
+                # Large pool gets 4 GiB. In-stream pruning (config
+                # constants SNAPSHOT_PRUNE_*) keeps the Counter bounded
+                # below this; 4 GiB headroom is for the post-stream
+                # cooccurrence_from_counts step plus pandas overhead.
+                #
+                # Calibration: a "large" term mining 10M snippets
+                # produces a Counter of ~2-3M post-prune lemmas. The
+                # heapq.nlargest top-N pass uses ~200 MB extra; pandas
+                # DataFrame for the top 100 partners is trivial. Peak
+                # observed in pre-deploy tests: ~1.4 GiB. 4 GiB leaves
+                # 2.5+ GiB cushion for unexpected vocabulary widths.
+                #
+                # Concurrent worst-case: 5 × 4 GiB = 20 GiB cap, but
+                # working-set is closer to 5 × 1.5 GiB = 7.5 GiB which
+                # comfortably fits alongside the small-medium pool on
+                # the 15.5 GiB NUC.
+                requests:
+                  cpu: "200m"
+                  memory: "1Gi"
+                limits:
+                  cpu: "1000m"
+                  memory: "4Gi"

@@ -1,0 +1,53 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: geonlp-janitor
+  labels:
+    app: geonlp
+    component: janitor
+spec:
+  # Every hour. Independent of the term-miner CronJob so its
+  # `Forbid` concurrency policy doesn't starve us during long mines.
+  schedule: "0 * * * *"
+  # The janitor is idempotent — a parallel run is harmless. But
+  # Forbid here is also fine and slightly cleaner.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 300   # 5 min hard cap — janitor work is trivial
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: geonlp
+            component: janitor
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: janitor
+              image: geonlp-portal:latest
+              imagePullPolicy: Never
+              command:
+                - python
+                - scripts/reset_zombies.py
+              env:
+                - name: DB_HOST
+                  valueFrom: { secretKeyRef: { name: geonlp-env, key: DB_HOST } }
+                - name: DB_USER
+                  valueFrom: { secretKeyRef: { name: geonlp-env, key: DB_USER } }
+                - name: DB_PASSWORD
+                  valueFrom: { secretKeyRef: { name: geonlp-env, key: DB_PASSWORD } }
+                - name: DB_NAME
+                  valueFrom: { secretKeyRef: { name: geonlp-env, key: DB_NAME } }
+              resources:
+                # Tiny — script just runs one UPDATE.
+                requests:
+                  cpu: "50m"
+                  memory: "64Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "256Mi"

@@ -1,0 +1,23 @@
+# Pinned dependencies as used at paper submission.
+# Loose pins (~=) for libraries where minor versions are unlikely to break behaviour.
+
+# Core data handling
+pandas~=2.1
+numpy~=1.26
+
+# Database
+SQLAlchemy~=2.0
+psycopg2-binary~=2.9
+
+# HTTP / xDD API
+requests~=2.31
+
+# NLP
+nltk~=3.8
+
+# Environment loading
+python-dotenv~=1.0
+
+# Optional: development / testing
+# pytest~=7.4
+# jupyter~=1.0
