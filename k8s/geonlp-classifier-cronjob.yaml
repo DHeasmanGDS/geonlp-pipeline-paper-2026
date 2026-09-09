@@ -11,12 +11,13 @@ metadata:
     app: geonlp
     component: term-classifier
 spec:
-  # Every 30 minutes. With --batch-size=100 and --sleep=0.5, each tick
-  # finishes in ~1 minute (mostly xDD round-trip time). 30 min cadence
-  # means up to 100 newly-queued terms per half-hour get classified
-  # before the workers can reach them — which is far above the actual
-  # user-driven enqueue rate.
-  schedule: "*/30 * * * *"
+  # Every 10 minutes (was */30). With --batch-size=100 and --sleep=0.5,
+  # each tick finishes in ~1 minute (mostly xDD round-trip time).
+  # Bumped to */10 because pools no longer claim unclassified (NULL)
+  # rows — they only mine their own class — so a row must be classified
+  # promptly or it sits idle. */10 keeps the NULL backlog near zero even
+  # when the contributor-bot adds terms in bursts.
+  schedule: "*/10 * * * *"
   # Forbid: if a previous tick is still running (unlikely with the
   # 5-min activeDeadlineSeconds), skip this one. Two concurrent
   # classifiers would race on the same rows; harmless thanks to the

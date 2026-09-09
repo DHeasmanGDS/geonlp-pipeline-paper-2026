@@ -10,8 +10,8 @@ abstract: >-
   Counter pruning for memory-bounded streaming, pool-segregated parallel
   workers, and in-database information-theoretic statistics.
 type: software
-version: "1.4"
-date-released: "2026-06-04"
+version: "2.0"
+date-released: "2026-09-09"
 license: MIT
 url: "https://github.com/DHeasmanGDS/geonlp-pipeline-paper-2026"
 repository-code: "https://github.com/DHeasmanGDS/geonlp-pipeline-paper-2026"

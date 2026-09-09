@@ -64,21 +64,22 @@ SNAPSHOT_TOKENS_PER_DOCUMENT = 4326
 # (Without this, xDD's default applies and can change silently.)
 SNAPSHOT_FRAGMENT_LIMIT = 2000
 
-# Hard upper limit on snippets we'll mine for a single term. Above this,
-# the streaming Counter's unique-token vocabulary exceeds the 1Gi pod
-# memory limit and the worker OOMKills mid-mine — creating a zombie
-# row. Pre-flight check probes xDD's `success.hits` field BEFORE
-# claiming the term; if hits > this threshold, the worker marks the
-# row `failed` with a terminal error and exits cleanly. No OOM, no
-# zombie, honest reporting.
+# Pre-flight gate, in xDD DOCUMENT hits (success.hits). A term above
+# this is declined before mining: the worker marks the row 'failed'
+# (oversized) and exits cleanly rather than OOM-killing mid-stream and
+# orphaning the row. Kept == TERM_CLASS_LARGE_MAX_HITS so the classifier
+# and the pre-flight gate agree on what is mineable.
 #
-# Calibration: at ~250 bytes per unique lemma in Python's Counter,
-# a 1Gi memory budget holds roughly 4M unique partner tokens before
-# headroom is gone. Empirically, high-frequency terms tend to have
-# a partner-vocab : snippet-count ratio of around 1:5, so a 20M
-# snippet threshold leaves comfortable headroom. We use 10M for
-# a safety margin against unusually-wide vocabularies.
-SNAPSHOT_MAX_SNIPPETS_PER_TERM = 10_000_000
+# Calibration (2026-06-21): memory scales with SNIPPETS (~13-18 per
+# doc), not docs. The 4Gi large pool handled 'reduced' (~26M snippets)
+# but OOM'd on 4-8M-doc common words ('comparison' 6.2M docs -> ~100M
+# snippets), leaving zombie rows that throttled the pool. Lowered from
+# 10,000,000 to 2,000,000 docs (~30M snippets) so anything that would
+# OOM even the 4Gi pool is declined up front. Deliberately mining a
+# bigger important term (e.g. 'carbonate' ~2.07M docs) is done out of
+# band via scripts/mine_one_term.py in a larger one-off pod, which
+# passes skip_preflight=True to bypass this gate.
+SNAPSHOT_MAX_SNIPPETS_PER_TERM = 2_000_000
 
 # In-stream Counter pruning thresholds.
 #
@@ -104,32 +105,57 @@ SNAPSHOT_PRUNE_TRIGGER_SIZE = 5_000_000
 # When pruning, drop entries with raw count below this value.
 SNAPSHOT_PRUNE_KEEP_MIN = 5
 
-# Term-class thresholds.
+# Term-class thresholds, in xDD DOCUMENT hits (success.hits from the
+# pre-flight probe). CRITICAL CALIBRATION NOTE: a document yields ~13-18
+# snippet fragments, and pod memory scales with SNIPPETS (the streaming
+# Counter's vocabulary), NOT documents. So a doc-hit threshold has to be
+# divided by ~15 to reason about snippet/memory load. Observed: a ~925k-
+# doc term ('bei') streams ~12M snippets and OOM-kills a 1Gi small-medium
+# pod; a ~977k-doc term ('ein') streamed ~18M before OOM. The old medium
+# ceiling of 1,000,000 docs therefore routed ~13-18M-snippet terms into
+# the 1Gi pool, which OOM'd them on a loop (the janitor re-queues a
+# reaped zombie with its class intact -> re-claimed -> re-OOM).
 #
-# These define the boundaries between worker pools. A term's xDD
-# snippet count (success.hits from the pre-flight probe) is mapped to
-# one of four classes; the workers claim from the queue filtered by
-# their allowed class set:
+#   small      hits <        100,000    fast (<30 min), 1Gi
+#   medium     hits <        300,000    ~4-5M snippets, safe in 1Gi
+#   large      hits <      2,000,000    4Gi pod + pruning (~26M snippets)
+#   oversized  hits >=     2,000,000    declined (OOMs even the 4Gi pool)
 #
-#   small      hits <         100,000    fast (<30 min)
-#   medium     hits <       1,000,000    moderate (a few hours)
-#   large      hits <      10,000,000    slow (24h+), needs 4Gi pod + pruning
-#   oversized  hits >=     10,000,000    declined (would OOM even with pruning)
-#
-# The 'oversized' bound is identical to SNAPSHOT_MAX_SNIPPETS_PER_TERM
-# so the pre-flight check and the classifier agree on what's mineable.
-#
-# Tune these by watching mining-time distributions per class. If
-# 'medium' terms routinely take more than a few hours, lower
-# TERM_CLASS_MEDIUM_MAX_HITS so they get routed to the large pool with
-# its bigger memory budget. If 'small' is too sparse, raise its
-# threshold to absorb more terms.
+# Large-pool ceiling lowered 10M -> 2M docs (2026-06-21): 2-8M-doc common
+# words stream 30-110M snippets and OOM'd even the 4Gi pool, leaving
+# zombie rows that held the cap and throttled the pool. Anything bigger
+# is now declined at classification. A deliberately-important oversized
+# term is mined out of band (scripts/mine_one_term.py, bigger pod). The
+# durable fix for the recurring noise is curating the contributor-bot's
+# input to geoscience terms, not raising thresholds.
 TERM_CLASS_SMALL_MAX_HITS = 100_000
-TERM_CLASS_MEDIUM_MAX_HITS = 1_000_000
-TERM_CLASS_LARGE_MAX_HITS = 10_000_000  # == SNAPSHOT_MAX_SNIPPETS_PER_TERM by design
+TERM_CLASS_MEDIUM_MAX_HITS = 300_000   # lowered from 1,000,000 — see snippet/doc note above
+TERM_CLASS_LARGE_MAX_HITS = 2_000_000  # == SNAPSHOT_MAX_SNIPPETS_PER_TERM by design
 
 # All known classes, in order of increasing workload size.
 TERM_CLASSES = ("small", "medium", "large", "oversized")
+
+
+# Per-pool upper bound on simultaneously-mining pods. With
+# `concurrencyPolicy: Allow` on each CronJob, K8s imposes no cap of its
+# own, so the worker enforces these as a soft DB-level check in
+# scripts/process_pending_terms.py::main(). They live here (not in the
+# worker script) so the Request-a-term page can surface them read-only —
+# that way the displayed cap can never drift from the enforced one.
+#
+# Sizing (production NUC, 15.5 GiB / 8 cores):
+#   small-medium: 25 x 1Gi pods  (~10 GiB working set in practice)
+#   large       :  5 x 4Gi pods  (~12 GiB working set; wider vocab)
+# The two pools rarely saturate together, and large-pool peak is bounded
+# by in-stream pruning. If `kubectl top node` shows sustained memory
+# > 85% under both pools busy, drop MAX_CONCURRENT_SMALL_MEDIUM first
+# (small terms drain fastest so the queue recovers quickly).
+MAX_CONCURRENT_SMALL_MEDIUM = 25
+MAX_CONCURRENT_LARGE = 5
+
+# Legacy single-pool cap, used when a worker runs without --class
+# (matches pre-Phase-1 behavior).
+MAX_CONCURRENT_MINERS = 30
 
 
 def classify_hits(hits: int | None) -> str | None:

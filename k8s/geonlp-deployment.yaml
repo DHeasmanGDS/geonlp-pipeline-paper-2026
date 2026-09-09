@@ -1,0 +1,100 @@
+# NOTE: the `geonlp-env` Secret is intentionally NOT in this file. It
+# was previously committed with stale Render credentials; the real
+# Secret is managed out-of-band on the cluster (set with kubectl create
+# secret) and is referenced below via secretKeyRef. Applying this
+# manifest does NOT touch the Secret.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: geonlp-deployment
+spec:
+  replicas: 1
+  selector:
+    # NOTE: Deployment selectors are immutable after creation. We
+    # intentionally keep the broad `app: geonlp` selector here so a
+    # `kubectl apply` doesn't fail on a forbidden change. The pod
+    # template below carries an additional `component: web` label so
+    # the Service can distinguish web pods from miner / stats-refresh
+    # CronJob pods, which also bear `app: geonlp`.
+    matchLabels:
+      app: geonlp
+  template:
+    metadata:
+      labels:
+        app: geonlp
+        component: web
+    spec:
+      containers:
+        - name: geonlp
+          image: geonlp-portal:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: geonlp-env
+                  key: DB_HOST
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: geonlp-env
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: geonlp-env
+                  key: DB_PASSWORD
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: geonlp-env
+                  key: DB_NAME
+
+          # Resource isolation: requests reserve capacity that the
+          # scheduler guarantees; limits cap the burst. With these set
+          # the kernel's CFS scheduler gives the web pod CPU shares
+          # proportional to its request, even when the miner is
+          # spiking. Memory limit prevents OOM-kill cascades.
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "384Mi"
+            limits:
+              cpu: "1500m"
+              memory: "1Gi"
+
+          # Probes deliberately omitted. A previous attempt at
+          # readiness/liveness probes (commit 0b88d2e) caused
+          # transient endpoint flapping: under brief CPU contention
+          # during mining the probe could timeout, kube-proxy
+          # silently dropped the endpoint from the Service, and
+          # cloudflared got "connection refused" on the NodePort
+          # → Cloudflare 502. The pod never actually crashed. With no
+          # probes, the Service treats the pod as ready as long as it
+          # has a running container, which is the correct disposition
+          # for this app: a single sync-DB FastAPI worker that never
+          # gets unhealthy in a way only the kernel could detect.
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: geonlp-service
+spec:
+  type: NodePort
+  # CRITICAL: include `component: web` so the Service only routes to
+  # the FastAPI web pod. Without this, miner and stats-refresh CronJob
+  # pods (which share `app: geonlp` for cluster-wide grouping) become
+  # backends — but they don't listen on port 8000, so kube-proxy
+  # randomly load-balances cloudflared traffic to a dead endpoint and
+  # the user sees Cloudflare 502s.
+  selector:
+    app: geonlp
+    component: web
+  ports:
+    - port: 8000
+      targetPort: 8000
+      nodePort: 30080

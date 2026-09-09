@@ -1,0 +1,66 @@
+# One-off Job to mine 'carbonate' (~2.07M docs) out of band, in a pod
+# with more memory than the standard 4Gi large pool. The classifier
+# declines >=2M-doc terms as 'oversized' (they OOM the 4Gi pool), but
+# carbonate is wanted, so we mine it here via scripts/mine_one_term.py
+# (skip_preflight=True). Apply AFTER the image carrying mine_one_term.py
+# has been built/imported:
+#   kubectl apply -f k8s/mine-carbonate-job.yaml
+# Watch:   kubectl logs -f job/mine-carbonate
+# It self-deletes 1h after finishing (ttlSecondsAfterFinished).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mine-carbonate
+  labels:
+    app: geonlp
+    component: term-miner
+    pool: oversized-oneoff
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 86400   # 24h — carbonate is ~30M snippets
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: geonlp
+        component: term-miner
+        pool: oversized-oneoff
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: term-miner
+          image: geonlp-portal:latest
+          imagePullPolicy: Never
+          command:
+            - python
+            - scripts/mine_one_term.py
+            - "--term"
+            - "carbonate"
+          env:
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: geonlp-env
+                  key: DB_HOST
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: geonlp-env
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: geonlp-env
+                  key: DB_PASSWORD
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: geonlp-env
+                  key: DB_NAME
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "4Gi"
+            limits:
+              cpu: "1"
+              memory: "8Gi"

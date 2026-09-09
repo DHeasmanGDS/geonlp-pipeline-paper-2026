@@ -60,6 +60,9 @@ from services.mining.xdd_harvester import (
     iter_snippets,
 )
 from services.mining_config import (
+    MAX_CONCURRENT_LARGE,
+    MAX_CONCURRENT_MINERS,
+    MAX_CONCURRENT_SMALL_MEDIUM,
     SNAPSHOT_MAX_SNIPPETS_PER_TERM,
     SNAPSHOT_PRUNE_CHECK_INTERVAL,
     SNAPSHOT_PRUNE_KEEP_MIN,
@@ -74,6 +77,34 @@ from services.mining_config import (
 # Default top-N partners per anchor term — matches the volume in the
 # existing corpus (the MSc notebooks used 100).
 DEFAULT_TOP_N = 100
+
+
+class RetryableMiningError(Exception):
+    """A mining failure that is expected to succeed on a later attempt.
+
+    Raised for transient xDD problems that surface mid-stream (network
+    blips, DNS hiccups, rate limiting, 5xx) — the kind of thing a router
+    reboot or a brief upstream outage causes. Distinct from *terminal*
+    failures (oversized terms, zero coverage, schema/DB errors), which
+    keep raising RuntimeError and are marked status='failed' for good.
+
+    The worker catches this in main() and resets the request to
+    'pending' so the next cron tick re-mines it, up to
+    MAX_RETRYABLE_ATTEMPTS. Before this existed, a transient mid-stream
+    failure marked the row 'failed' permanently even though its own
+    message said "(retryable ...)", so every power/DNS blip silently
+    sidelined whatever terms were mid-mine until someone re-queued them
+    by hand.
+    """
+
+
+# How many times a request may be mined before a *retryable* failure is
+# treated as terminal. Each retry re-mines the term from scratch, so keep
+# this small: a deep mid-stream blip on a 20M-snippet term costs a full
+# re-mine. The xDD liveness check at the top of main() means a re-queued
+# term is not re-claimed until xDD is reachable again, so retries wait
+# out an outage rather than burning cron ticks during it.
+MAX_RETRYABLE_ATTEMPTS = 3
 
 
 def implied_total_docs(engine) -> int | None:
@@ -151,10 +182,13 @@ def claim_next_pending(engine, allowed_classes: list[str] | None = None):
     Pool routing: when `allowed_classes` is provided (e.g.
     ['small','medium'] for the small-medium pool, ['large'] for the
     large pool), only rows whose `term_class` matches are eligible.
-    Rows with `term_class IS NULL` are eligible for ANY pool — this is
-    a defensive fallback for unclassified rows during rollout, before
-    the classifier CronJob has caught up. Once the classifier has
-    drained the queue, NULL-class rows become rare.
+    Rows with `term_class IS NULL` are NOT claimed by a scoped pool —
+    they wait for the classifier CronJob to tag them first. (NULL rows
+    used to be claimable by any pool as a rollout fallback, but that let
+    an unclassified row mined by one pool count toward EVERY pool's cap
+    and starve the others — e.g. small-pool NULL mines pinning the large
+    pool at "full". The classifier now runs often enough to tag rows
+    promptly, so each pool sticks to its own class.)
 
     When `allowed_classes` is None or empty, ALL classes (and NULL)
     are eligible — the old behavior, retained so the worker remains
@@ -172,7 +206,7 @@ def claim_next_pending(engine, allowed_classes: list[str] | None = None):
             SELECT id, term, term_class
             FROM term_requests
             WHERE status = 'pending'
-              AND (term_class = ANY(:classes) OR term_class IS NULL)
+              AND term_class = ANY(:classes)
             ORDER BY requested_at
             LIMIT 1
             FOR UPDATE SKIP LOCKED
@@ -225,6 +259,52 @@ def mark_failed(engine, request_id: int, error: str) -> None:
     """)
     with engine.begin() as conn:
         conn.execute(sql, {"id": request_id, "err": error[:8000]})
+
+
+def _retry_attempt_so_far(engine, request_id: int) -> int:
+    """How many times this request has already failed retryably.
+
+    Parsed from the "[retry N/M]" prefix that requeue_for_retry() writes
+    into error_message. Returns 0 if there is no such marker (the row has
+    never failed retryably) or if the read fails — defaulting to 0 keeps
+    the safer behavior (retry rather than give up) when the DB is flaky.
+    """
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT error_message FROM term_requests WHERE id = :id"),
+                {"id": request_id},
+            ).fetchone()
+    except Exception:
+        return 0
+    msg = row[0] if row else None
+    if msg and msg.startswith("[retry "):
+        try:
+            return int(msg[len("[retry "):msg.index("]")].split("/")[0])
+        except (ValueError, IndexError):
+            return 0
+    return 0
+
+
+def requeue_for_retry(engine, request_id: int, attempt: int, error: str) -> None:
+    """Reset a request to 'pending' after a retryable failure.
+
+    Records the attempt count in error_message as a "[retry N/M]" prefix
+    so the next run can tell how many times this term has failed without
+    a schema change. The marker is cleared by mark_done() on eventual
+    success. started_at is nulled so the row looks like any other pending
+    row (and the zombie reaper ignores it).
+    """
+    note = f"[retry {attempt}/{MAX_RETRYABLE_ATTEMPTS}] {error}"
+    sql = text("""
+        UPDATE term_requests
+        SET status = 'pending',
+            started_at = NULL,
+            error_message = :msg
+        WHERE id = :id
+    """)
+    with engine.begin() as conn:
+        conn.execute(sql, {"id": request_id, "msg": note[:8000]})
 
 
 def already_processed(engine, term: str) -> bool:
@@ -280,7 +360,8 @@ def update_all_statistics_for_term(engine, term: str) -> None:
         )
 
 
-def process_term(engine, term: str, top_n: int, *, dry_run: bool = False) -> dict:
+def process_term(engine, term: str, top_n: int, *, dry_run: bool = False,
+                 skip_preflight: bool = False) -> dict:
     """Run the full mining pipeline for one term.
 
     Returns a dict of counters useful for logging. Raises on
@@ -309,17 +390,23 @@ def process_term(engine, term: str, top_n: int, *, dry_run: bool = False) -> dic
     # mining anyway — the harvester's own retry logic will kick in and
     # we don't want to silently fail terms during xDD outages.
     harvest_params = {"clean": "true", **xdd_snapshot_params()}
-    total_hits = get_total_hits(term_lc, extra_params=harvest_params)
-    if total_hits is not None and total_hits > SNAPSHOT_MAX_SNIPPETS_PER_TERM:
-        raise RuntimeError(
-            f"xDD reports {total_hits:,} snippets for '{term_lc}', exceeds "
-            f"SNAPSHOT_MAX_SNIPPETS_PER_TERM ({SNAPSHOT_MAX_SNIPPETS_PER_TERM:,}) "
-            f"(terminal — too common to mine reliably under current memory budget; "
-            f"would OOM mid-mine and orphan the row)"
-        )
-    if total_hits is not None:
-        print(f"[worker] '{term_lc}': pre-flight reports {total_hits:,} snippets "
-              f"(threshold {SNAPSHOT_MAX_SNIPPETS_PER_TERM:,}); proceeding")
+    if skip_preflight:
+        # Deliberate big-term mine in a larger-memory pod (see
+        # scripts/mine_one_term.py). Bypass the size gate entirely.
+        print(f"[worker] '{term_lc}': pre-flight SKIPPED (skip_preflight=True) — "
+              f"mining regardless of size; relies on the running pod's memory budget")
+    else:
+        total_hits = get_total_hits(term_lc, extra_params=harvest_params)
+        if total_hits is not None and total_hits > SNAPSHOT_MAX_SNIPPETS_PER_TERM:
+            raise RuntimeError(
+                f"xDD reports {total_hits:,} snippets for '{term_lc}', exceeds "
+                f"SNAPSHOT_MAX_SNIPPETS_PER_TERM ({SNAPSHOT_MAX_SNIPPETS_PER_TERM:,}) "
+                f"(terminal — too common to mine reliably under current memory budget; "
+                f"would OOM mid-mine and orphan the row)"
+            )
+        if total_hits is not None:
+            print(f"[worker] '{term_lc}': pre-flight reports {total_hits:,} snippets "
+                  f"(threshold {SNAPSHOT_MAX_SNIPPETS_PER_TERM:,}); proceeding")
 
     # 1+2 streaming: pull each xDD snippet, preprocess, lemmatize-and-
     # count. Memory peak is the Counter, not the snippet list.
@@ -357,7 +444,7 @@ def process_term(engine, term: str, top_n: int, *, dry_run: bool = False) -> dic
                     keep_min=SNAPSHOT_PRUNE_KEEP_MIN,
                 )
     except XddHarvestError as e:
-        raise RuntimeError(
+        raise RetryableMiningError(
             f"xDD harvest failed for '{term_lc}' (retryable — likely "
             f"rate-limited or transient outage): {e}"
         )
@@ -450,35 +537,11 @@ def process_term(engine, term: str, top_n: int, *, dry_run: bool = False) -> dic
     }
 
 
-# Per-pool upper bound on simultaneously-mining pods. With
-# `concurrencyPolicy: Allow` on each CronJob, K8s itself imposes no cap
-# and pods can accumulate during long mines. This DB-level check
-# protects the NUC and stays polite to xDD's API.
-#
-# Sizing observations on the production NUC (15.5 GiB, 8 cores):
-#   20 miners @ 1Gi: 7.6 GiB peak (~380 MiB avg/pod), 9% CPU
-#   25 miners @ 1Gi: 10.3 GiB peak (~316 MiB avg/pod), 9-27% CPU
-#   30 miners @ 1Gi: projected ~11.9 GiB (77% memory), 30% CPU peak
-#
-# Phase 1 pool segregation:
-#   small-medium pool (--class small,medium): 25 × 1Gi = 25 GiB cap
-#                                             ~10 GiB working set in practice
-#   large pool       (--class large)        :  5 × 4Gi = 20 GiB cap
-#                                             ~12 GiB working set in practice
-#                                             (large terms have wider vocab)
-# Combined worst-case if both pools full: ~22 GiB working set, fits in
-# the 15.5 GiB NUC by virtue of: (a) pruning bounds large-pool peak,
-# (b) the two pools are rarely both fully saturated.
-#
-# If `kubectl top node` shows sustained memory > 85% under both pools
-# busy, drop MAX_CONCURRENT_SMALL_MEDIUM first (small terms drain
-# fastest so the queue catches up quickly).
-MAX_CONCURRENT_SMALL_MEDIUM = 25
-MAX_CONCURRENT_LARGE = 5
-
-# Legacy single-pool cap, retained so a worker run without --class
-# still has a sane ceiling (matches pre-Phase-1 behavior).
-MAX_CONCURRENT_MINERS = 30
+# The per-pool concurrent-miner caps (MAX_CONCURRENT_SMALL_MEDIUM,
+# MAX_CONCURRENT_LARGE, MAX_CONCURRENT_MINERS) are defined in
+# services/mining_config.py and imported at the top of this module, so
+# the worker's enforced cap and the cap shown on the Request-a-term page
+# can never drift apart. See that file for the NUC sizing rationale.
 
 
 def count_running_miners(engine, allowed_classes: list[str] | None = None) -> int:
@@ -491,18 +554,17 @@ def count_running_miners(engine, allowed_classes: list[str] | None = None) -> in
     will catch them and reset to pending. Until then, new miners will
     skip ticks until the count goes back below the cap.
 
-    Class filter mirrors claim_next_pending: rows with NULL term_class
-    are counted in EVERY scoped count, because the worker would claim
-    them under any class filter. This is intentional — it prevents the
-    per-pool cap from being silently bypassed by a backlog of
-    unclassified rows.
+    Class filter mirrors claim_next_pending: a scoped count includes
+    ONLY the pool's own class. NULL (unclassified) rows are not counted —
+    a scoped pool no longer claims them, so counting them would inflate
+    the cap and let one pool's unclassified work stall another.
     """
     if allowed_classes:
         sql = text("""
             SELECT COUNT(*)
             FROM term_requests
             WHERE status = 'running'
-              AND (term_class = ANY(:classes) OR term_class IS NULL)
+              AND term_class = ANY(:classes)
         """)
         params = {"classes": list(allowed_classes)}
     else:
@@ -657,6 +719,36 @@ def main() -> int:
         elapsed = time.time() - started
         print(f"[worker] '{term}' DONE in {elapsed/60:.1f} min: {result}")
         return 0
+
+    except RetryableMiningError as e:
+        # Transient xDD failure (network / DNS / rate-limit / 5xx). Put
+        # the term back to 'pending' so a later tick re-mines it, up to
+        # MAX_RETRYABLE_ATTEMPTS, instead of marking it failed for good.
+        elapsed = time.time() - started
+        attempt = _retry_attempt_so_far(engine, request_id) + 1
+        if attempt < MAX_RETRYABLE_ATTEMPTS:
+            try:
+                requeue_for_retry(engine, request_id, attempt,
+                                  f"{type(e).__name__}: {e}")
+            except Exception as inner:
+                print(f"[worker] '{term}': also failed to requeue: {inner}",
+                      file=sys.stderr)
+                return 1
+            print(f"[worker] '{term}' transient failure after {elapsed/60:.1f} min "
+                  f"(attempt {attempt}/{MAX_RETRYABLE_ATTEMPTS}) — requeued to pending: {e}",
+                  file=sys.stderr)
+            return 0
+        # Out of retries: stop re-mining and mark it failed for good so
+        # it does not loop forever on a term that always dies mid-stream.
+        print(f"[worker] '{term}' still failing after {attempt} attempts "
+              f"({elapsed/60:.1f} min) — marking failed: {e}", file=sys.stderr)
+        try:
+            mark_failed(engine, request_id,
+                        f"exhausted {MAX_RETRYABLE_ATTEMPTS} retryable attempts; "
+                        f"last error: {type(e).__name__}: {e}")
+        except Exception as inner:
+            print(f"[worker] also failed to mark request failed: {inner}", file=sys.stderr)
+        return 1
 
     except Exception as e:
         elapsed = time.time() - started

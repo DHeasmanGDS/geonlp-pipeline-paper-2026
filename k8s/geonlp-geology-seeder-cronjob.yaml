@@ -1,0 +1,75 @@
+# Geology term seeder: keeps the mining queue topped up with geology
+# terms on purpose, so geology coverage outpaces the biology drift that
+# the auto-queue crawler causes. Deliberate counterpart to the accidental
+# GET-driven auto-queue (which is also gated to geology-only, see
+# services/geo_lexicon.py::is_geological).
+#
+# Apply after the image carrying scripts/geology_seeder.py +
+# data/geo_lexicon.txt has been built:
+#   kubectl apply -f k8s/geonlp-geology-seeder-cronjob.yaml
+# One-off dry run:
+#   kubectl create job --from=cronjob/geonlp-geology-seeder geo-seed-test
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: geonlp-geology-seeder
+  labels:
+    app: geonlp
+    component: geology-seeder
+spec:
+  # Every 30 min; queues up to --batch net-new geology terms, self-limits
+  # when nothing new is left. ~400 geology terms/hour, comfortably above
+  # the crawler's ~150/hour of noise.
+  schedule: "*/30 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 300
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: geonlp
+            component: geology-seeder
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: geology-seeder
+              image: geonlp-portal:latest
+              imagePullPolicy: Never
+              command:
+                - python
+                - scripts/geology_seeder.py
+                - "--batch"
+                - "200"
+              env:
+                - name: DB_HOST
+                  valueFrom:
+                    secretKeyRef:
+                      name: geonlp-env
+                      key: DB_HOST
+                - name: DB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: geonlp-env
+                      key: DB_USER
+                - name: DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: geonlp-env
+                      key: DB_PASSWORD
+                - name: DB_NAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: geonlp-env
+                      key: DB_NAME
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "256Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "512Mi"

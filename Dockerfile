@@ -1,37 +1,32 @@
-# Container build for the geonlp mining workers.
-# Mirrors the image used in production at paper submission.
-
+# Use a minimal Python base image
 FROM python:3.11-slim
 
-WORKDIR /app
-
-# System dependencies for psycopg2 source build and NLTK data download.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
-        libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Python dependencies first so layer caches well.
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Pre-download NLTK corpora needed by services/mining/text_processing.py
-# and services/mining/cooccurrence.py.
-RUN python -m nltk.downloader -d /usr/share/nltk_data \
-        wordnet \
-        omw-1.4 \
-        stopwords \
-        punkt
-
-ENV NLTK_DATA=/usr/share/nltk_data
-ENV PYTHONPATH=/app
+# Environment setup
+ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Source.
-COPY services/ services/
-COPY scripts/ scripts/
-COPY db/ db/
+# Set working directory
+WORKDIR /app
 
-# Default command runs the mining worker. CronJob manifests override this
-# with --class flags to scope the worker to a specific pool.
-CMD ["python", "scripts/process_pending_terms.py"]
+# System dependencies (for psycopg2, etc.)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+# Pre-download NLTK corpora used by the mining worker. Done at build time
+# so the running container has no internet dependency for tokenization.
+RUN python -c "import nltk; nltk.download('stopwords', quiet=True); nltk.download('wordnet', quiet=True); nltk.download('punkt', quiet=True); nltk.download('punkt_tab', quiet=True)"
+
+# Copy the entire project
+COPY . .
+
+# Expose FastAPI default port
+EXPOSE 8000
+
+# Entry point for Uvicorn (production-ready)
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

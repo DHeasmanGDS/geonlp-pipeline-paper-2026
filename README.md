@@ -6,8 +6,8 @@ Frozen code snapshot accompanying:
 > Heasman, D. and Eglington, B. (2026). A Reproducible Pipeline for
 > Constructing Domain-Specific Text Corpora from Scholarly Literature:
 > A Case Study in Geoscience Using the xDD Snippet API.
-> *Computers & Geosciences*, [in review].
-> DOI: [to be added on acceptance]
+> Submitted to *Computers & Geosciences*.
+> Article DOI: [to be added on acceptance]
 
 This repository contains the production pipeline source code, database
 schema, and Kubernetes deployment manifests described in the paper,
@@ -80,11 +80,11 @@ The `k8s/` directory contains CronJob manifests for parallelized mining at scale
 
 See `notebooks/` for guided walkthroughs:
 
-- `01_setup_database.ipynb` — schema setup from scratch
-- `02_preprocess_demo.ipynb` — tokenization and lemmatization of sample snippets
-- `03_pmi_walkthrough.ipynb` — PMI computation worked example
-- `04_in_stream_pruning_demo.ipynb` — Strategy A (in-stream Counter pruning) demonstration
-- `05_mine_one_term.ipynb` — full end-to-end mine of a small term
+- `01_setup_database.py` — schema setup from scratch
+- `02_preprocess_demo.py` — tokenization and lemmatization of sample snippets
+- `03_pmi_walkthrough.py` — PMI computation worked example
+- `04_in_stream_pruning_demo.py` — Strategy A (in-stream Counter pruning) demonstration
+- `05_mine_one_term.py` — full end-to-end mine of a small term
 
 The paper's specific tables and figures are reproduced in a companion repository: [geonlp-paper-notebooks](https://github.com/DHeasmanGDS/geonlp-paper-notebooks).
 
@@ -94,7 +94,7 @@ The paper's specific tables and figures are reproduced in a companion repository
 xDD Snippet API
        |
        v
-Python Harvester ── pre-flight hit check (skip if hits > 10M)
+Python Harvester ── pre-flight hit check (skip if hits > 2M)
        |               retries with backoff (network resilience)
        |               BibJSON bibliography generation
        v
@@ -120,7 +120,9 @@ SNAPSHOT_MAX_ACQUIRED = "2026-05-18"     # xDD ingest cutoff
 SNAPSHOT_TOTAL_DOCS = 18_660_524         # xDD document count at cutoff
 SNAPSHOT_TOKENS_PER_DOCUMENT = 4326       # average tokens per indexed article
 SNAPSHOT_FRAGMENT_LIMIT = 2000            # max snippets per article in API call
-SNAPSHOT_MAX_SNIPPETS_PER_TERM = 10_000_000   # oversized class threshold
+SNAPSHOT_MAX_SNIPPETS_PER_TERM = 2_000_000    # oversized class threshold
+TERM_CLASS_MEDIUM_MAX_HITS = 300_000      # small/medium pool ceiling
+TERM_CLASS_LARGE_MAX_HITS = 2_000_000     # large pool ceiling (== oversized threshold)
 SNAPSHOT_PRUNE_CHECK_INTERVAL = 500_000   # snippets between pruning checks
 SNAPSHOT_PRUNE_TRIGGER_SIZE = 5_000_000   # Counter size triggering prune
 SNAPSHOT_PRUNE_KEEP_MIN = 5               # minimum count to retain
@@ -140,7 +142,7 @@ If you use this code or build on the pipeline described in the paper, please cit
              Using the xDD Snippet API},
   journal = {Computers \& Geosciences},
   year    = {2026},
-  note    = {[in review]},
+  note    = {submitted},
   doi     = {https://doi.org/10.5281/zenodo.20543278}
 }
 ```
